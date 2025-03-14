@@ -1,1 +1,55 @@
+name: GitHub Workflows Cleanup
 
+on:
+  schedule:
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: List all workflows
+        run: |
+          curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows" | jq '.workflows | .[] | {id, name, path}'
+
+      - name: Delete workflow runs older than 180 days
+        run: |
+          for workflow in $(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows" | jq -r '.workflows[].id'); do
+
+            runs=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/$workflow/runs?per_page=100")
+
+            for run_id in $(echo "$runs" | jq -r '.workflow_runs[] | select(.created_at < "'$(date -d "180 days ago" --utc +%Y-%m-%dT%H:%M:%SZ)'") | .id'); do
+              echo "Deleting run $run_id for workflow $workflow"
+              curl -X DELETE -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/runs/$run_id"
+            done
+          done
+
+      - name: Remove workflow entries with no runs
+        run: |
+          for workflow in $(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows" | jq -r '.workflows[].id'); do
+
+            run_count=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/$workflow/runs" | jq '.total_count')
+
+            if [ "$run_count" -eq 0 ]; then
+              echo "Workflow $workflow has no runs. Removing entry (not the file)."
+              curl -X DELETE -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/workflows/$workflow"
+            fi
+          done
